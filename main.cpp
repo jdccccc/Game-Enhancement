@@ -254,9 +254,6 @@ int main()
 
         // 2. 光照阶段: 使用 G-buffer 计算光照
         // ----------------------------------------------------
-        // 不需要清除颜色缓冲，因为屏幕四边形会覆盖整个屏幕
-        // 但需要清除深度缓冲，如果后续还要绘制需要深度测试的物体 (比如光源立方体)
-        glClear(GL_DEPTH_BUFFER_BIT);
         shaderLightingPass.use();
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, gPosition);
