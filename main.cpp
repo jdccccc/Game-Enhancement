@@ -10,6 +10,9 @@
 #include "shader_m.h" // 您需要从LearnOpenGL或您自己的实现中获取此类
 #include "camera.h"
 
+#define STB_IMAGE_IMPLEMENTATION // 在一个 .cpp 文件中定义这个宏，以包含 stb_image 的实现
+#include "stb_image.h" // 包含 stb_image 库头文件，用于加载图像
+
 #include <iostream>
 
 void framebuffer_size_callback(GLFWwindow* window, int width, int height);
@@ -91,50 +94,52 @@ int main()
     // 设置顶点数据（和缓冲区）并配置顶点属性
     // 立方体的顶点数据
     // 一共六面，每个面2个三角形，每个三角形3个顶点
-    // 每个顶点两个属性：位置和法向量
+    // 每个顶点的属性：位置, 法向量, 纹理坐标
     // 法向量决定了光线如何从物体表面反射
+    // 当渲染三角形（或其他图元）时，GPU 会自动在顶点之间对纹理坐标进行插值。
     float vertices[] = {
-        -0.5f, -0.5f, -0.5f,  0.0f,  0.0f, -1.0f,
-         0.5f, -0.5f, -0.5f,  0.0f,  0.0f, -1.0f,
-         0.5f,  0.5f, -0.5f,  0.0f,  0.0f, -1.0f,
-         0.5f,  0.5f, -0.5f,  0.0f,  0.0f, -1.0f,
-        -0.5f,  0.5f, -0.5f,  0.0f,  0.0f, -1.0f,
-        -0.5f, -0.5f, -0.5f,  0.0f,  0.0f, -1.0f,
+        // 位置              // 法线             // 纹理坐标
+        -0.5f, -0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  0.0f, 0.0f,
+        0.5f, -0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  1.0f, 0.0f,
+        0.5f,  0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  1.0f, 1.0f,
+        0.5f,  0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  1.0f, 1.0f,
+        -0.5f,  0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  0.0f, 1.0f,
+        -0.5f, -0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  0.0f, 0.0f,
 
-        -0.5f, -0.5f,  0.5f,  0.0f,  0.0f,  1.0f,
-         0.5f, -0.5f,  0.5f,  0.0f,  0.0f,  1.0f,
-         0.5f,  0.5f,  0.5f,  0.0f,  0.0f,  1.0f,
-         0.5f,  0.5f,  0.5f,  0.0f,  0.0f,  1.0f,
-        -0.5f,  0.5f,  0.5f,  0.0f,  0.0f,  1.0f,
-        -0.5f, -0.5f,  0.5f,  0.0f,  0.0f,  1.0f,
+        -0.5f, -0.5f,  0.5f,  0.0f,  0.0f,  1.0f,  0.0f, 0.0f,
+        0.5f, -0.5f,  0.5f,  0.0f,  0.0f,  1.0f,  1.0f, 0.0f,
+        0.5f,  0.5f,  0.5f,  0.0f,  0.0f,  1.0f,  1.0f, 1.0f,
+        0.5f,  0.5f,  0.5f,  0.0f,  0.0f,  1.0f,  1.0f, 1.0f,
+        -0.5f,  0.5f,  0.5f,  0.0f,  0.0f,  1.0f,  0.0f, 1.0f,
+        -0.5f, -0.5f,  0.5f,  0.0f,  0.0f,  1.0f,  0.0f, 0.0f,
 
-        -0.5f,  0.5f,  0.5f, -1.0f,  0.0f,  0.0f,
-        -0.5f,  0.5f, -0.5f, -1.0f,  0.0f,  0.0f,
-        -0.5f, -0.5f, -0.5f, -1.0f,  0.0f,  0.0f,
-        -0.5f, -0.5f, -0.5f, -1.0f,  0.0f,  0.0f,
-        -0.5f, -0.5f,  0.5f, -1.0f,  0.0f,  0.0f,
-        -0.5f,  0.5f,  0.5f, -1.0f,  0.0f,  0.0f,
+        -0.5f,  0.5f,  0.5f, -1.0f,  0.0f,  0.0f,  1.0f, 0.0f,
+        -0.5f,  0.5f, -0.5f, -1.0f,  0.0f,  0.0f,  1.0f, 1.0f,
+        -0.5f, -0.5f, -0.5f, -1.0f,  0.0f,  0.0f,  0.0f, 1.0f,
+        -0.5f, -0.5f, -0.5f, -1.0f,  0.0f,  0.0f,  0.0f, 1.0f,
+        -0.5f, -0.5f,  0.5f, -1.0f,  0.0f,  0.0f,  0.0f, 0.0f,
+        -0.5f,  0.5f,  0.5f, -1.0f,  0.0f,  0.0f,  1.0f, 0.0f,
 
-         0.5f,  0.5f,  0.5f,  1.0f,  0.0f,  0.0f,
-         0.5f,  0.5f, -0.5f,  1.0f,  0.0f,  0.0f,
-         0.5f, -0.5f, -0.5f,  1.0f,  0.0f,  0.0f,
-         0.5f, -0.5f, -0.5f,  1.0f,  0.0f,  0.0f,
-         0.5f, -0.5f,  0.5f,  1.0f,  0.0f,  0.0f,
-         0.5f,  0.5f,  0.5f,  1.0f,  0.0f,  0.0f,
+        0.5f,  0.5f,  0.5f,  1.0f,  0.0f,  0.0f,  1.0f, 0.0f,
+        0.5f,  0.5f, -0.5f,  1.0f,  0.0f,  0.0f,  1.0f, 1.0f,
+        0.5f, -0.5f, -0.5f,  1.0f,  0.0f,  0.0f,  0.0f, 1.0f,
+        0.5f, -0.5f, -0.5f,  1.0f,  0.0f,  0.0f,  0.0f, 1.0f,
+        0.5f, -0.5f,  0.5f,  1.0f,  0.0f,  0.0f,  0.0f, 0.0f,
+        0.5f,  0.5f,  0.5f,  1.0f,  0.0f,  0.0f,  1.0f, 0.0f,
 
-        -0.5f, -0.5f, -0.5f,  0.0f, -1.0f,  0.0f,
-         0.5f, -0.5f, -0.5f,  0.0f, -1.0f,  0.0f,
-         0.5f, -0.5f,  0.5f,  0.0f, -1.0f,  0.0f,
-         0.5f, -0.5f,  0.5f,  0.0f, -1.0f,  0.0f,
-        -0.5f, -0.5f,  0.5f,  0.0f, -1.0f,  0.0f,
-        -0.5f, -0.5f, -0.5f,  0.0f, -1.0f,  0.0f,
+        -0.5f, -0.5f, -0.5f,  0.0f, -1.0f,  0.0f,  0.0f, 1.0f,
+        0.5f, -0.5f, -0.5f,  0.0f, -1.0f,  0.0f,  1.0f, 1.0f,
+        0.5f, -0.5f,  0.5f,  0.0f, -1.0f,  0.0f,  1.0f, 0.0f,
+        0.5f, -0.5f,  0.5f,  0.0f, -1.0f,  0.0f,  1.0f, 0.0f,
+        -0.5f, -0.5f,  0.5f,  0.0f, -1.0f,  0.0f,  0.0f, 0.0f,
+        -0.5f, -0.5f, -0.5f,  0.0f, -1.0f,  0.0f,  0.0f, 1.0f,
 
-        -0.5f,  0.5f, -0.5f,  0.0f,  1.0f,  0.0f,
-         0.5f,  0.5f, -0.5f,  0.0f,  1.0f,  0.0f,
-         0.5f,  0.5f,  0.5f,  0.0f,  1.0f,  0.0f,
-         0.5f,  0.5f,  0.5f,  0.0f,  1.0f,  0.0f,
-        -0.5f,  0.5f,  0.5f,  0.0f,  1.0f,  0.0f,
-        -0.5f,  0.5f, -0.5f,  0.0f,  1.0f,  0.0f
+        -0.5f,  0.5f, -0.5f,  0.0f,  1.0f,  0.0f,  0.0f, 1.0f,
+        0.5f,  0.5f, -0.5f,  0.0f,  1.0f,  0.0f,  1.0f, 1.0f,
+        0.5f,  0.5f,  0.5f,  0.0f,  1.0f,  0.0f,  1.0f, 0.0f,
+        0.5f,  0.5f,  0.5f,  0.0f,  1.0f,  0.0f,  1.0f, 0.0f,
+        -0.5f,  0.5f,  0.5f,  0.0f,  1.0f,  0.0f,  0.0f, 0.0f,
+        -0.5f,  0.5f, -0.5f,  0.0f,  1.0f,  0.0f,  0.0f, 1.0f
     };
     
     // 首先，配置立方体的VAO（和VBO）
@@ -142,27 +147,90 @@ int main()
     glGenVertexArrays(1, &cubeVAO);
     glGenBuffers(1, &VBO);
 
+    glBindVertexArray(cubeVAO);
+
     glBindBuffer(GL_ARRAY_BUFFER, VBO);
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
 
-    glBindVertexArray(cubeVAO);
-
-    // 位置属性
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)0);
+    // 位置属性 (location = 0)
+    // 每个顶点有 8 个 float 值 (3 pos + 3 normal + 2 texcoord)
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(0);
-    // 法线属性
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)(3 * sizeof(float)));
+    // 法线属性 (location = 1)
+    // 偏移量是位置属性的大小 (3 * float)
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(3 * sizeof(float)));
     glEnableVertexAttribArray(1);
+    // 纹理坐标属性 (location = 2)
+    // 偏移量是位置和法线属性的大小 (3 + 3 = 6 * float)
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(6 * sizeof(float)));
+    glEnableVertexAttribArray(2); // 启用纹理坐标顶点属性
 
-    // 其次，配置光源的VAO（VBO保持不变；光源对象也是一个3D立方体，顶点相同）
+    // 其次，配置光源的VAO
     unsigned int lightCubeVAO;
     glGenVertexArrays(1, &lightCubeVAO);
     glBindVertexArray(lightCubeVAO);
 
-    // 只需要位置数据
+    // 只需要位置数据，但步长现在是 8 * sizeof(float)
     glBindBuffer(GL_ARRAY_BUFFER, VBO);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0); // 步长改为 8 * sizeof(float)
     glEnableVertexAttribArray(0);
+
+    // --- 加载和创建纹理 ---
+    unsigned int texture;
+    glGenTextures(1, &texture); // 生成一个纹理 ID
+    glBindTexture(GL_TEXTURE_2D, texture); // 绑定纹理对象，后续操作将作用于此纹理
+
+    // 设置纹理环绕参数 (WRAP) - 超出纹理坐标范围时的行为
+    // GL_REPEAT: 重复纹理图像
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT); // S 轴 (相当于 U、X 轴)
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT); // T 轴 (相当于 V、Y 轴)
+
+    // 设置纹理过滤参数 (FILTER) - 纹理放大缩小时的像素采样方式
+    // GL_LINEAR: 线性过滤 (双线性过滤)，取邻近纹素的加权平均值，效果更平滑
+    // GL_NEAREST: 邻近过滤 (点过滤)，取最接近的纹素颜色，效果更像素化
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR); // 缩小过滤，使用 mipmap 进行线性过滤
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR); // 放大过滤，使用线性过滤
+
+    // 加载图像、创建纹理并生成 mipmap
+    int width, height, nrChannels;
+    //stbi_set_flip_vertically_on_load(true); // 如果你的纹理坐标原点在左上角，取消注释这行来翻转图像
+    // 确保 stone.jpg 在可执行文件可以访问的路径下，这里假设它在上一级目录
+    unsigned char *data = stbi_load("../stone.jpg", &width, &height, &nrChannels, 0);
+    if (data)
+    {
+        // 确定图像格式
+        GLenum format;
+        if (nrChannels == 1)
+            format = GL_RED;
+        else if (nrChannels == 3)
+            format = GL_RGB;
+        else if (nrChannels == 4)
+            format = GL_RGBA;
+        else {
+            std::cout << "Error loading texture: Unknown number of channels (" << nrChannels << ")" << std::endl;
+            stbi_image_free(data);
+            return -1; // 或者采取其他错误处理
+        }
+
+        // 将图像数据上传到 GPU 纹理
+        // target: 目标纹理类型 (GL_TEXTURE_2D)
+        // level: mipmap 级别 (0 为基础级别)
+        // internalformat: 纹理存储在 GPU 上的格式 (例如 GL_RGB)
+        // width, height: 纹理的宽高
+        // border: 必须为 0 (历史遗留)
+        // format: 源图像数据的格式 (例如 GL_RGB)
+        // type: 源图像数据的数据类型 (例如 GL_UNSIGNED_BYTE)
+        // data: 指向图像数据的指针
+        glTexImage2D(GL_TEXTURE_2D, 0, format, width, height, 0, format, GL_UNSIGNED_BYTE, data);
+        glGenerateMipmap(GL_TEXTURE_2D); // 自动生成 mipmap
+    }
+    else
+    {
+        std::cout << "Failed to load texture: ../stone.jpg" << std::endl;
+    }
+    stbi_image_free(data); // 释放图像内存，纹理数据已上传到 GPU
+
+    // --- 纹理加载结束 ---
 
     // 局部坐标采用无量纲单位，没有固定物理尺寸，坐标值表示的是模型内部的相对比例关系
 
@@ -188,7 +256,7 @@ int main()
         // 在设置uniforms/绘制对象时确保激活着色器
         cubeShader.use();
         // 设置物体的颜色为橙色调 (RGB: 1.0, 0.5, 0.31)
-        cubeShader.setVec3("objectColor", 1.0f, 0.5f, 0.31f);
+        // cubeShader.setVec3("objectColor", 1.0f, 0.5f, 0.31f);
         
         // 设置光源的颜色为白色 (RGB: 1.0, 1.0, 1.0)
         cubeShader.setVec3("lightColor",  1.0f, 1.0f, 1.0f);
@@ -228,6 +296,21 @@ int main()
         // 创建模型矩阵：定义物体在世界空间中的位置、旋转和缩放
         // glm::mat4(1.0f): 创建一个4x4单位矩阵，表示无变换的初始状态
         glm::mat4 model = glm::mat4(1.0f);
+
+        // --- 绑定纹理 ---
+
+        // GPU 资源: 显卡（GPU）通常有多个可以同时绑定和访问纹理的地方，这些地方就叫做纹理单元。GPU 内部专门用来放置纹理“卡槽”。
+
+        // 编号: 纹理单元是有编号的，从 GL_TEXTURE0 开始，然后是 GL_TEXTURE1, GL_TEXTURE2，以此类推。现代 GPU 通常支持至少 16 个（甚至更多）纹理单元。
+
+        // 目的: 允许在一个着色器中同时使用多个不同的纹理（例如，一个基础颜色纹理，一个法线贴图，一个高光贴图等）。
+
+        // 激活纹理单元 0
+        glActiveTexture(GL_TEXTURE0);
+        // 绑定之前加载的纹理到当前激活的纹理单元
+        glBindTexture(GL_TEXTURE_2D, texture);
+        // 告诉着色器 texture1 sampler 应该从纹理单元 0 采样
+        cubeShader.setInt("texture1", 0);
         
         // 将模型矩阵传递给着色器
         // cubeShader.setMat4: 将4x4矩阵传递给着色器中的uniform变量
