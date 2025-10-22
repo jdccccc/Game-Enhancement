@@ -1,41 +1,48 @@
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
-#include <filesystem> // C++17 标准库中的文件系统库, 用于文件路径操作
-
+#include <filesystem> // C++17 文件系统库
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
-#include <glm/gtc/type_ptr.hpp> // 包含 glm::value_ptr, 用于将 glm 类型转换为指针, 方便 OpenGL 函数调用
-
-// 假设Shader类和Camera类在您的包含路径中
-#include "shader_m.h" // 您需要从LearnOpenGL或您自己的实现中获取此类
+#include <glm/gtc/type_ptr.hpp>
+#include "shader_m.h"
 #include "camera.h"
-
-#define STB_IMAGE_IMPLEMENTATION // 在一个 .cpp 文件中定义这个宏，以包含 stb_image 的实现
-#include "stb_image.h" // 包含 stb_image 库头文件，用于加载图像
-
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
 #include <iostream>
+#include <vector>
 
+// 函数声明
 void framebuffer_size_callback(GLFWwindow* window, int width, int height);
 void mouse_callback(GLFWwindow* window, double xpos, double ypos);
 void scroll_callback(GLFWwindow* window, double xoffset, double yoffset);
 void processInput(GLFWwindow *window);
+unsigned int loadTexture(const char *path);
+void renderQuad();
 
 // 设置
-const unsigned int SCR_WIDTH = 800;
-const unsigned int SCR_HEIGHT = 600;
+unsigned int SCR_WIDTH = 800;
+unsigned int SCR_HEIGHT = 600;
 
 // 摄像机
-Camera camera(glm::vec3(0.0f, 0.0f, 3.0f));
+Camera camera(glm::vec3(0.0f, 0.0f, 5.0f)); // 将相机稍微向后移动
 float lastX = SCR_WIDTH / 2.0f;
 float lastY = SCR_HEIGHT / 2.0f;
 bool firstMouse = true;
 
 // 时间
-float deltaTime = 0.0f;	
+float deltaTime = 0.0f;
 float lastFrame = 0.0f;
 
-// 光源
+// 光源位置 (保持原始设置)
 glm::vec3 lightPos(1.2f, 1.0f, 2.0f);
+
+// G-buffer 全局变量 (为了 framebuffer_size_callback 访问)
+unsigned int gBuffer;
+unsigned int gPosition, gNormal, gAlbedoSpec;
+unsigned int rboDepth;
+// 屏幕四边形 VAO/VBO
+unsigned int quadVAO = 0;
+unsigned int quadVBO;
 
 int main()
 {
@@ -44,10 +51,10 @@ int main()
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    glfwWindowHint(GLFW_RESIZABLE, GL_FALSE);
+    // glfwWindowHint(GLFW_RESIZABLE, GL_FALSE); // 允许调整窗口大小以处理 gbuffer
 
     // glfw 窗口创建
-    GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "LearnOpenGL", NULL, NULL);
+    GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "Deferred Rendering", NULL, NULL);
     if (window == NULL)
     {
         std::cout << "Failed to create GLFW window" << std::endl;
@@ -59,7 +66,6 @@ int main()
     glfwSetCursorPosCallback(window, mouse_callback);
     glfwSetScrollCallback(window, scroll_callback);
 
-    // 隐藏鼠标光标并将其捕获到窗口中
     glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 
     // glad: 加载所有OpenGL函数指针
@@ -70,47 +76,40 @@ int main()
     }
 
     // 配置全局opengl状态
-    // 启用深度测试
-    // 深度测试用于确定哪些像素应该被绘制，哪些应该被遮挡
-    // 启用深度测试后，OpenGL会根据每个像素的深度值来判断是否绘制该像素
     glEnable(GL_DEPTH_TEST);
 
-    // 构建和编译我们的着色器程序
-    // 注意：您需要提供一个可以从文件加载着色器的Shader类
+    // 构建和编译着色器程序
     std::cout << "Current working directory: " << std::filesystem::current_path() << std::endl;
-    
-    // 使用相对路径指向上一级目录中的着色器文件
-    Shader cubeShader("../basic_lighting.vs", "../basic_lighting.fs");
-    if (cubeShader.ID == 0) {
-        std::cout << "ERROR: Failed to load lighting shader!" << std::endl;
-        return -1;
-    }
-    
-    Shader lightCubeShader("../light_cube.vs", "../light_cube.fs"); // 为光源立方体提供单独的着色器
-    if (lightCubeShader.ID == 0) {
-        std::cout << "ERROR: Failed to load light cube shader!" << std::endl;
+
+    Shader shaderGeometryPass("../basic_lighting.vs", "../g_buffer.fs"); // 用于几何阶段
+    Shader shaderLightingPass("../lighting_pass.vs", "../lighting_pass.fs"); // 用于光照阶段
+    Shader shaderLightBox("../light_cube.vs", "../light_cube.fs"); // 光源立方体着色器 (保持不变)
+
+    // 检查着色器是否加载成功
+     if (shaderGeometryPass.ID == 0 || shaderLightingPass.ID == 0 || shaderLightBox.ID == 0) {
+        std::cerr << "ERROR::SHADER::COMPILATION_FAILED\n" <<
+                     (shaderGeometryPass.ID == 0 ? "Geometry Pass Shader failed\n" : "") <<
+                     (shaderLightingPass.ID == 0 ? "Lighting Pass Shader failed\n" : "") <<
+                     (shaderLightBox.ID == 0 ? "Light Box Shader failed\n" : "") << std::endl;
+        glfwTerminate();
         return -1;
     }
 
-    // 设置顶点数据（和缓冲区）并配置顶点属性
-    // 立方体的顶点数据
-    // 一共六面，每个面2个三角形，每个三角形3个顶点
-    // 每个顶点的属性：位置, 法向量, 纹理坐标
-    // 法向量决定了光线如何从物体表面反射
-    // 当渲染三角形（或其他图元）时，GPU 会自动在顶点之间对纹理坐标进行插值。
+
+    // 设置顶点数据 (与原始代码相同)
     float vertices[] = {
-        // 位置              // 法线             // 纹理坐标
+        // positions          // normals           // texture Coords
         -0.5f, -0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  0.0f, 0.0f,
-        0.5f, -0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  1.0f, 0.0f,
-        0.5f,  0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  1.0f, 1.0f,
-        0.5f,  0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  1.0f, 1.0f,
+         0.5f, -0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  1.0f, 0.0f,
+         0.5f,  0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  1.0f, 1.0f,
+         0.5f,  0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  1.0f, 1.0f,
         -0.5f,  0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  0.0f, 1.0f,
         -0.5f, -0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  0.0f, 0.0f,
 
         -0.5f, -0.5f,  0.5f,  0.0f,  0.0f,  1.0f,  0.0f, 0.0f,
-        0.5f, -0.5f,  0.5f,  0.0f,  0.0f,  1.0f,  1.0f, 0.0f,
-        0.5f,  0.5f,  0.5f,  0.0f,  0.0f,  1.0f,  1.0f, 1.0f,
-        0.5f,  0.5f,  0.5f,  0.0f,  0.0f,  1.0f,  1.0f, 1.0f,
+         0.5f, -0.5f,  0.5f,  0.0f,  0.0f,  1.0f,  1.0f, 0.0f,
+         0.5f,  0.5f,  0.5f,  0.0f,  0.0f,  1.0f,  1.0f, 1.0f,
+         0.5f,  0.5f,  0.5f,  0.0f,  0.0f,  1.0f,  1.0f, 1.0f,
         -0.5f,  0.5f,  0.5f,  0.0f,  0.0f,  1.0f,  0.0f, 1.0f,
         -0.5f, -0.5f,  0.5f,  0.0f,  0.0f,  1.0f,  0.0f, 0.0f,
 
@@ -121,286 +120,205 @@ int main()
         -0.5f, -0.5f,  0.5f, -1.0f,  0.0f,  0.0f,  0.0f, 0.0f,
         -0.5f,  0.5f,  0.5f, -1.0f,  0.0f,  0.0f,  1.0f, 0.0f,
 
-        0.5f,  0.5f,  0.5f,  1.0f,  0.0f,  0.0f,  1.0f, 0.0f,
-        0.5f,  0.5f, -0.5f,  1.0f,  0.0f,  0.0f,  1.0f, 1.0f,
-        0.5f, -0.5f, -0.5f,  1.0f,  0.0f,  0.0f,  0.0f, 1.0f,
-        0.5f, -0.5f, -0.5f,  1.0f,  0.0f,  0.0f,  0.0f, 1.0f,
-        0.5f, -0.5f,  0.5f,  1.0f,  0.0f,  0.0f,  0.0f, 0.0f,
-        0.5f,  0.5f,  0.5f,  1.0f,  0.0f,  0.0f,  1.0f, 0.0f,
+         0.5f,  0.5f,  0.5f,  1.0f,  0.0f,  0.0f,  1.0f, 0.0f,
+         0.5f,  0.5f, -0.5f,  1.0f,  0.0f,  0.0f,  1.0f, 1.0f,
+         0.5f, -0.5f, -0.5f,  1.0f,  0.0f,  0.0f,  0.0f, 1.0f,
+         0.5f, -0.5f, -0.5f,  1.0f,  0.0f,  0.0f,  0.0f, 1.0f,
+         0.5f, -0.5f,  0.5f,  1.0f,  0.0f,  0.0f,  0.0f, 0.0f,
+         0.5f,  0.5f,  0.5f,  1.0f,  0.0f,  0.0f,  1.0f, 0.0f,
 
         -0.5f, -0.5f, -0.5f,  0.0f, -1.0f,  0.0f,  0.0f, 1.0f,
-        0.5f, -0.5f, -0.5f,  0.0f, -1.0f,  0.0f,  1.0f, 1.0f,
-        0.5f, -0.5f,  0.5f,  0.0f, -1.0f,  0.0f,  1.0f, 0.0f,
-        0.5f, -0.5f,  0.5f,  0.0f, -1.0f,  0.0f,  1.0f, 0.0f,
+         0.5f, -0.5f, -0.5f,  0.0f, -1.0f,  0.0f,  1.0f, 1.0f,
+         0.5f, -0.5f,  0.5f,  0.0f, -1.0f,  0.0f,  1.0f, 0.0f,
+         0.5f, -0.5f,  0.5f,  0.0f, -1.0f,  0.0f,  1.0f, 0.0f,
         -0.5f, -0.5f,  0.5f,  0.0f, -1.0f,  0.0f,  0.0f, 0.0f,
         -0.5f, -0.5f, -0.5f,  0.0f, -1.0f,  0.0f,  0.0f, 1.0f,
 
         -0.5f,  0.5f, -0.5f,  0.0f,  1.0f,  0.0f,  0.0f, 1.0f,
-        0.5f,  0.5f, -0.5f,  0.0f,  1.0f,  0.0f,  1.0f, 1.0f,
-        0.5f,  0.5f,  0.5f,  0.0f,  1.0f,  0.0f,  1.0f, 0.0f,
-        0.5f,  0.5f,  0.5f,  0.0f,  1.0f,  0.0f,  1.0f, 0.0f,
+         0.5f,  0.5f, -0.5f,  0.0f,  1.0f,  0.0f,  1.0f, 1.0f,
+         0.5f,  0.5f,  0.5f,  0.0f,  1.0f,  0.0f,  1.0f, 0.0f,
+         0.5f,  0.5f,  0.5f,  0.0f,  1.0f,  0.0f,  1.0f, 0.0f,
         -0.5f,  0.5f,  0.5f,  0.0f,  1.0f,  0.0f,  0.0f, 0.0f,
         -0.5f,  0.5f, -0.5f,  0.0f,  1.0f,  0.0f,  0.0f, 1.0f
     };
-    
-    // 首先，配置立方体的VAO（和VBO）
-    unsigned int VBO, cubeVAO;
+    // 配置立方体 VAO 和 VBO (用于几何阶段和光源立方体)
+    unsigned int cubeVAO, cubeVBO;
     glGenVertexArrays(1, &cubeVAO);
-    glGenBuffers(1, &VBO);
-
+    glGenBuffers(1, &cubeVBO);
     glBindVertexArray(cubeVAO);
-
-    glBindBuffer(GL_ARRAY_BUFFER, VBO);
+    glBindBuffer(GL_ARRAY_BUFFER, cubeVBO);
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
-
-    // 位置属性 (location = 0)
-    // 每个顶点有 8 个 float 值 (3 pos + 3 normal + 2 texcoord)
+    glEnableVertexAttribArray(0); // 位置
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
-    glEnableVertexAttribArray(0);
-    // 法线属性 (location = 1)
-    // 偏移量是位置属性的大小 (3 * float)
+    glEnableVertexAttribArray(1); // 法线
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(3 * sizeof(float)));
-    glEnableVertexAttribArray(1);
-    // 纹理坐标属性 (location = 2)
-    // 偏移量是位置和法线属性的大小 (3 + 3 = 6 * float)
+    glEnableVertexAttribArray(2); // 纹理坐标
     glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(6 * sizeof(float)));
-    glEnableVertexAttribArray(2); // 启用纹理坐标顶点属性
+    glBindVertexArray(0); // 解绑 cubeVAO
 
-    // 其次，配置光源的VAO
+    // 配置光源立方体 VAO (复用 cubeVBO，但属性指针不同)
     unsigned int lightCubeVAO;
     glGenVertexArrays(1, &lightCubeVAO);
     glBindVertexArray(lightCubeVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, cubeVBO);
+    glEnableVertexAttribArray(0); // 只需要位置
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
+    glBindVertexArray(0); // 解绑 lightCubeVAO
 
-    // 只需要位置数据，但步长现在是 8 * sizeof(float)
-    glBindBuffer(GL_ARRAY_BUFFER, VBO);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0); // 步长改为 8 * sizeof(float)
-    glEnableVertexAttribArray(0);
-
-    // --- 加载和创建纹理 ---
-    unsigned int texture;
-    glGenTextures(1, &texture); // 生成一个纹理 ID
-    glBindTexture(GL_TEXTURE_2D, texture); // 绑定纹理对象，后续操作将作用于此纹理
-
-    // 设置纹理环绕参数 (WRAP) - 超出纹理坐标范围时的行为
-    // GL_REPEAT: 重复纹理图像
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT); // S 轴 (相当于 U、X 轴)
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT); // T 轴 (相当于 V、Y 轴)
-
-    // 设置纹理过滤参数 (FILTER) - 纹理放大缩小时的像素采样方式
-    // GL_LINEAR: 线性过滤 (双线性过滤)，取邻近纹素的加权平均值，效果更平滑
-    // GL_NEAREST: 邻近过滤 (点过滤)，取最接近的纹素颜色，效果更像素化
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR); // 缩小过滤，使用 mipmap 进行线性过滤
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR); // 放大过滤，使用线性过滤
-
-    // 加载图像、创建纹理并生成 mipmap
-    int width, height, nrChannels;
-    //stbi_set_flip_vertically_on_load(true); // 如果你的纹理坐标原点在左上角，取消注释这行来翻转图像
-    // 确保 stone.jpg 在可执行文件可以访问的路径下，这里假设它在上一级目录
-    unsigned char *data = stbi_load("../stone.jpg", &width, &height, &nrChannels, 0);
-    if (data)
-    {
-        // 确定图像格式
-        GLenum format;
-        if (nrChannels == 1)
-            format = GL_RED;
-        else if (nrChannels == 3)
-            format = GL_RGB;
-        else if (nrChannels == 4)
-            format = GL_RGBA;
-        else {
-            std::cout << "Error loading texture: Unknown number of channels (" << nrChannels << ")" << std::endl;
-            stbi_image_free(data);
-            return -1; // 或者采取其他错误处理
-        }
-
-        // 将图像数据上传到 GPU 纹理
-        // target: 目标纹理类型 (GL_TEXTURE_2D)
-        // level: mipmap 级别 (0 为基础级别)
-        // internalformat: 纹理存储在 GPU 上的格式 (例如 GL_RGB)
-        // width, height: 纹理的宽高
-        // border: 必须为 0 (历史遗留)
-        // format: 源图像数据的格式 (例如 GL_RGB)
-        // type: 源图像数据的数据类型 (例如 GL_UNSIGNED_BYTE)
-        // data: 指向图像数据的指针
-        glTexImage2D(GL_TEXTURE_2D, 0, format, width, height, 0, format, GL_UNSIGNED_BYTE, data);
-        glGenerateMipmap(GL_TEXTURE_2D); // 自动生成 mipmap
+    // 加载纹理
+    unsigned int diffuseMap = loadTexture("../stone.jpg");
+    if (diffuseMap == 0) {
+        glfwTerminate();
+        return -1;
     }
-    else
-    {
-        std::cout << "Failed to load texture: ../stone.jpg" << std::endl;
-    }
-    stbi_image_free(data); // 释放图像内存，纹理数据已上传到 GPU
 
-    // --- 纹理加载结束 ---
 
-    // 局部坐标采用无量纲单位，没有固定物理尺寸，坐标值表示的是模型内部的相对比例关系
+    // --- 配置 G-buffer 帧缓冲 ---
+    glGenFramebuffers(1, &gBuffer);
+    glBindFramebuffer(GL_FRAMEBUFFER, gBuffer);
+
+    // 位置颜色缓冲
+    glGenTextures(1, &gPosition);
+    glBindTexture(GL_TEXTURE_2D, gPosition);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, SCR_WIDTH, SCR_HEIGHT, 0, GL_RGB, GL_FLOAT, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gPosition, 0);
+
+    // 法线颜色缓冲
+    glGenTextures(1, &gNormal);
+    glBindTexture(GL_TEXTURE_2D, gNormal);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, SCR_WIDTH, SCR_HEIGHT, 0, GL_RGB, GL_FLOAT, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, gNormal, 0);
+
+    // 颜色 + 镜面颜色缓冲
+    glGenTextures(1, &gAlbedoSpec);
+    glBindTexture(GL_TEXTURE_2D, gAlbedoSpec);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, SCR_WIDTH, SCR_HEIGHT, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, gAlbedoSpec, 0);
+
+    // 告诉 OpenGL 我们要绘制到哪些颜色附件
+    unsigned int attachments[3] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2 };
+    glDrawBuffers(3, attachments);
+
+    // 创建并附加深度缓冲
+    glGenRenderbuffers(1, &rboDepth);
+    glBindRenderbuffer(GL_RENDERBUFFER, rboDepth);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT, SCR_WIDTH, SCR_HEIGHT);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, rboDepth);
+    // 检查帧缓冲是否完整
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+        std::cout << "Framebuffer not complete!" << std::endl;
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    // 光照阶段着色器配置
+    shaderLightingPass.use();
+    shaderLightingPass.setInt("gPosition", 0);
+    shaderLightingPass.setInt("gNormal", 1);
+    shaderLightingPass.setInt("gAlbedoSpec", 2);
 
     // 渲染循环
     while (!glfwWindowShouldClose(window))
     {
-        // 每帧的时间逻辑
         float currentFrame = static_cast<float>(glfwGetTime());
         deltaTime = currentFrame - lastFrame;
         lastFrame = currentFrame;
 
-        // 输入
         processInput(window);
 
-        // 渲染
-        // 设置清除颜色为深灰色
-        // 这个颜色会在每次调用glClear时填充颜色缓冲区，作为背景颜色
-        glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
-
-        // 清除颜色缓冲区和深度缓冲区
+        glClearColor(0.1f, 0.1f, 0.1f, 1.0f); // 设置默认背景色
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-        // 在设置uniforms/绘制对象时确保激活着色器
-        cubeShader.use();
-        // 设置物体的颜色为橙色调 (RGB: 1.0, 0.5, 0.31)
-        // cubeShader.setVec3("objectColor", 1.0f, 0.5f, 0.31f);
-        
-        // 设置光源的颜色为白色 (RGB: 1.0, 1.0, 1.0)
-        cubeShader.setVec3("lightColor",  1.0f, 1.0f, 1.0f);
-        
-        // 设置光源在世界空间中的位置
-        cubeShader.setVec3("lightPos", lightPos);
-        
-        // 设置观察者（相机）在世界空间中的位置，用于光照计算
-        cubeShader.setVec3("viewPos", camera.Position);
+        // 1. 几何阶段: 渲染场景几何信息到 G-buffer
+        // ----------------------------------------------------
+        glBindFramebuffer(GL_FRAMEBUFFER, gBuffer);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT); // 清除 G-Buffer
+            glm::mat4 projection = glm::perspective(glm::radians(camera.Zoom), (float)SCR_WIDTH / (float)SCR_HEIGHT, 0.1f, 100.0f);
+            glm::mat4 view = camera.GetViewMatrix();
+            glm::mat4 model = glm::mat4(1.0f);
+            shaderGeometryPass.use();
+            shaderGeometryPass.setMat4("projection", projection);
+            shaderGeometryPass.setMat4("view", view);
+            shaderGeometryPass.setMat4("model", model); // 被照射立方体的模型矩阵 (单位矩阵，在原点)
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, diffuseMap);
+            shaderGeometryPass.setInt("texture_diffuse1", 0); // 对应 g_buffer.fs 中的 texture_diffuse1
+            glBindVertexArray(cubeVAO); // 使用立方体的 VAO (包含位置、法线、纹理坐标)
+            glDrawArrays(GL_TRIANGLES, 0, 36);
+            glBindVertexArray(0);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0); // 解绑 G-Buffer
 
-        // 视图/投影变换
-        // 创建投影矩阵：将3D场景投影到2D屏幕上
-        // glm::perspective: 创建透视投影矩阵，模拟人眼的透视效果
-        //   - glm::radians(camera.Zoom): 将相机的视野角度从度转换为弧度
-        //   - (float)SCR_WIDTH / (float)SCR_HEIGHT: 屏幕宽高比，用于正确显示图像
-        //   - 0.1f: 近裁剪平面，距离相机最近的可见点
-        //   - 100.0f: 远裁剪平面，距离相机最远的可见点
-        glm::mat4 projection = glm::perspective(glm::radians(camera.Zoom), (float)SCR_WIDTH / (float)SCR_HEIGHT, 0.1f, 100.0f);
-        
-        // 创建视图矩阵：定义相机的位置和朝向
-        // camera.GetViewMatrix(): 从相机对象获取视图矩阵，包含相机的位置、目标点和上向量
-        glm::mat4 view = camera.GetViewMatrix();
-        
-        // 将投影矩阵传递给着色器
-        // cubeShader.setMat4: 将4x4矩阵传递给着色器中的uniform变量
-        //   - "projection": 着色器中uniform变量的名称
-        //   - projection: 要传递的投影矩阵
-        cubeShader.setMat4("projection", projection);
-        
-        // 将视图矩阵传递给着色器
-        // cubeShader.setMat4: 将4x4矩阵传递给着色器中的uniform变量
-        //   - "view": 着色器中uniform变量的名称
-        //   - view: 要传递的视图矩阵
-        cubeShader.setMat4("view", view);
-
-        // 世界变换
-        // 创建模型矩阵：定义物体在世界空间中的位置、旋转和缩放
-        // glm::mat4(1.0f): 创建一个4x4单位矩阵，表示无变换的初始状态
-        glm::mat4 model = glm::mat4(1.0f);
-
-        // --- 绑定纹理 ---
-
-        // GPU 资源: 显卡（GPU）通常有多个可以同时绑定和访问纹理的地方，这些地方就叫做纹理单元。GPU 内部专门用来放置纹理“卡槽”。
-
-        // 编号: 纹理单元是有编号的，从 GL_TEXTURE0 开始，然后是 GL_TEXTURE1, GL_TEXTURE2，以此类推。现代 GPU 通常支持至少 16 个（甚至更多）纹理单元。
-
-        // 目的: 允许在一个着色器中同时使用多个不同的纹理（例如，一个基础颜色纹理，一个法线贴图，一个高光贴图等）。
-
-        // 激活纹理单元 0
+        // 2. 光照阶段: 使用 G-buffer 计算光照
+        // ----------------------------------------------------
+        // 不需要清除颜色缓冲，因为屏幕四边形会覆盖整个屏幕
+        // 但需要清除深度缓冲，如果后续还要绘制需要深度测试的物体 (比如光源立方体)
+        glClear(GL_DEPTH_BUFFER_BIT);
+        shaderLightingPass.use();
         glActiveTexture(GL_TEXTURE0);
-        // 绑定之前加载的纹理到当前激活的纹理单元
-        glBindTexture(GL_TEXTURE_2D, texture);
-        // 告诉着色器 texture1 sampler 应该从纹理单元 0 采样
-        cubeShader.setInt("texture1", 0);
-        
-        // 将模型矩阵传递给着色器
-        // cubeShader.setMat4: 将4x4矩阵传递给着色器中的uniform变量
-        //   - "model": 着色器中uniform变量的名称
-        //   - model: 要传递的模型矩阵（这里是单位矩阵，表示物体位于世界坐标系原点）
-        cubeShader.setMat4("model", model);
+        glBindTexture(GL_TEXTURE_2D, gPosition);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, gNormal);
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, gAlbedoSpec);
+        // 发送光照 uniforms
+        shaderLightingPass.setVec3("lightPos", lightPos); // 传递原始的光源位置
+        shaderLightingPass.setVec3("viewPos", camera.Position);
+        shaderLightingPass.setVec3("lightColor", 1.0f, 1.0f, 1.0f); // 设置光源颜色为白色
+        renderQuad(); // 渲染屏幕四边形
 
-        // 渲染立方体
-        // 绑定立方体的顶点数组对象
-        // glBindVertexArray: 指定要使用的顶点数组对象，包含顶点属性配置
-        glBindVertexArray(cubeVAO);
-        
-        // 绘制立方体
-        // glDrawArrays: 使用当前绑定的顶点数组对象绘制图元
-        //   - GL_TRIANGLES: 指定要绘制的图元类型为三角形
-        //   - 0: 从顶点数组的起始位置开始绘制
-        //   - 36: 要绘制的顶点数量（立方体有6个面，每个面2个三角形，每个三角形3个顶点，共36个顶点）
-        glDrawArrays(GL_TRIANGLES, 0, 36);
+        // 2.5. 复制 G-buffer 的深度信息到默认帧缓冲
+        // ----------------------------------------------------------------------------------
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, gBuffer);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0); // 写入到默认帧缓冲
+        glBlitFramebuffer(0, 0, SCR_WIDTH, SCR_HEIGHT, 0, 0, SCR_WIDTH, SCR_HEIGHT, GL_DEPTH_BUFFER_BIT, GL_NEAREST);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-        // 同时绘制光源对象
-        // 切换到光源着色器程序
-        // lightCubeShader.use(): 激活光源着色器程序，后续渲染将使用此着色器
-        lightCubeShader.use();
-        
-        // 将投影矩阵传递给光源着色器
-        // lightCubeShader.setMat4: 将4x4矩阵传递给光源着色器中的uniform变量
-        //   - "projection": 着色器中uniform变量的名称
-        //   - projection: 要传递的投影矩阵（与主场景相同）
-        lightCubeShader.setMat4("projection", projection);
-        
-        // 将视图矩阵传递给光源着色器
-        // lightCubeShader.setMat4: 将4x4矩阵传递给光源着色器中的uniform变量
-        //   - "view": 着色器中uniform变量的名称
-        //   - view: 要传递的视图矩阵（与主场景相同）
-        lightCubeShader.setMat4("view", view);
-        
-        // 重置模型矩阵为单位矩阵
+        // 3. 渲染光源立方体 (保持原始逻辑)
+        // -----------------------------------------------------------------
+        shaderLightBox.use();
+        shaderLightBox.setMat4("projection", projection);
+        shaderLightBox.setMat4("view", view);
         model = glm::mat4(1.0f);
-        
-        // 将光源立方体平移到光源位置
-        // glm::translate: 创建平移矩阵，将物体沿指定向量移动
-        //   - model: 原始矩阵
-        //   - lightPos: 平移向量，即光源在世界空间中的位置
         model = glm::translate(model, lightPos);
-        
-        // 缩小光源立方体
-        // glm::scale: 创建缩放矩阵，改变物体的大小
-        //   - model: 原始矩阵
-        //   - glm::vec3(0.2f): 缩放因子，在所有三个轴上缩小到原来的0.2倍
-        model = glm::scale(model, glm::vec3(0.2f)); // 一个更小的立方体
-        
-        // 将变换后的模型矩阵传递给光源着色器
-        // lightCubeShader.setMat4: 将4x4矩阵传递给光源着色器中的uniform变量
-        //   - "model": 着色器中uniform变量的名称
-        //   - model: 要传递的模型矩阵（包含平移和缩放变换）
-        lightCubeShader.setMat4("model", model);
-
-        // 绑定光源立方体的顶点数组对象
-        // glBindVertexArray: 指定要使用的顶点数组对象，包含顶点属性配置
-        glBindVertexArray(lightCubeVAO);
-        
-        // 绘制光源立方体
-        // glDrawArrays: 使用当前绑定的顶点数组对象绘制图元
-        //   - GL_TRIANGLES: 指定要绘制的图元类型为三角形
-        //   - 0: 从顶点数组的起始位置开始绘制
-        //   - 36: 要绘制的顶点数量（立方体有6个面，每个面2个三角形，每个三角形3个顶点，共36个顶点）
+        model = glm::scale(model, glm::vec3(0.2f)); // 使立方体变小
+        shaderLightBox.setMat4("model", model);
+        glBindVertexArray(lightCubeVAO); // 使用光源立方体的 VAO
         glDrawArrays(GL_TRIANGLES, 0, 36);
+        glBindVertexArray(0);
 
-        // glfw: 交换缓冲区并轮询IO事件（按下的键、鼠标移动等）
         glfwSwapBuffers(window);
         glfwPollEvents();
     }
 
-    // 可选：释放所有资源
+    // 释放资源
     glDeleteVertexArrays(1, &cubeVAO);
     glDeleteVertexArrays(1, &lightCubeVAO);
-    glDeleteBuffers(1, &VBO);
+    glDeleteBuffers(1, &cubeVBO);
+    glDeleteTextures(1, &diffuseMap);
+    glDeleteFramebuffers(1, &gBuffer);
+    glDeleteTextures(1, &gPosition);
+    glDeleteTextures(1, &gNormal);
+    glDeleteTextures(1, &gAlbedoSpec);
+    glDeleteRenderbuffers(1, &rboDepth);
+     if (quadVAO != 0) {
+        glDeleteVertexArrays(1, &quadVAO);
+        glDeleteBuffers(1, &quadVBO);
+    }
 
-    // glfw: 终止，清除所有先前分配的GLFW资源。
+
     glfwTerminate();
     return 0;
 }
 
-// 处理所有输入：查询GLFW是否在此帧中按下了相关键并做出相应反应
+// 输入处理函数 (保持不变)
 void processInput(GLFWwindow *window)
 {
     if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
         glfwSetWindowShouldClose(window, true);
-
     if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
         camera.ProcessKeyboard(FORWARD, deltaTime);
     if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
@@ -411,50 +329,118 @@ void processInput(GLFWwindow *window)
         camera.ProcessKeyboard(RIGHT, deltaTime);
 }
 
-// glfw: 每当窗口大小改变时，此回调函数执行
+// 窗口大小调整回调 (更新 G-buffer)
 void framebuffer_size_callback(GLFWwindow* window, int width, int height)
 {
-    // TODO: 说明如何将渲染结果转换为屏幕上的可见图像
     glViewport(0, 0, width, height);
+    SCR_WIDTH = width;
+    SCR_HEIGHT = height;
+
+    // 重新调整 G-buffer 纹理和深度缓冲的大小
+    glBindTexture(GL_TEXTURE_2D, gPosition);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, SCR_WIDTH, SCR_HEIGHT, 0, GL_RGB, GL_FLOAT, NULL);
+    glBindTexture(GL_TEXTURE_2D, gNormal);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, SCR_WIDTH, SCR_HEIGHT, 0, GL_RGB, GL_FLOAT, NULL);
+    glBindTexture(GL_TEXTURE_2D, gAlbedoSpec);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, SCR_WIDTH, SCR_HEIGHT, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glBindRenderbuffer(GL_RENDERBUFFER, rboDepth);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT, SCR_WIDTH, SCR_HEIGHT);
 }
 
-// glfw: 每当鼠标移动时，此回调函数被调用
+// 鼠标移动回调 (保持不变)
 void mouse_callback(GLFWwindow* window, double xposIn, double yposIn)
 {
-    // 鼠标坐标的原点位于窗口的左上角
-    // 单位：像素, 每个单位表示屏幕上的一个物理像素点
-    // X坐标范围 [0, 窗口宽度)
-    // Y坐标范围 [0, 窗口高度)
-    // X坐标从左到右增加
-    // Y坐标从上到下增加
     float xpos = static_cast<float>(xposIn);
-    // static_cast 用于类型转换，在编译时进行检查，只允许合理的类型转换
-    // 不能用于无关类型之间的转换，比如将指针转换为整数类型，或者去除指针的const属性
-    // double 可以更准确地表示鼠标位置
-    // 然而，在OpenGL和GLM库中，许多函数都期望接收浮点数类型的参数
-    // 因此，需要将double类型的鼠标位置转换为float类型
     float ypos = static_cast<float>(yposIn);
-
-    // 初始化鼠标位置
     if (firstMouse)
     {
         lastX = xpos;
         lastY = ypos;
         firstMouse = false;
     }
-
     float xoffset = xpos - lastX;
     float yoffset = lastY - ypos;
-
     lastX = xpos;
     lastY = ypos;
-
     camera.ProcessMouseMovement(xoffset, yoffset);
 }
 
-// glfw: 每当鼠标滚轮滚动时，此回调函数被调用
+// 鼠标滚轮回调 (保持不变)
 void scroll_callback(GLFWwindow* window, double xoffset, double yoffset)
 {
-    // 鼠标滚轮滚动时，yoffset 为正值表示向上滚动，负值表示向下滚动
     camera.ProcessMouseScroll(static_cast<float>(yoffset));
+}
+
+// 加载纹理函数 (保持不变)
+unsigned int loadTexture(char const * path)
+{
+    unsigned int textureID;
+    glGenTextures(1, &textureID);
+
+    int width, height, nrComponents;
+    //stbi_set_flip_vertically_on_load(true); // 如果需要翻转纹理
+    unsigned char *data = stbi_load(path, &width, &height, &nrComponents, 0);
+    if (data)
+    {
+        GLenum format;
+        if (nrComponents == 1)
+            format = GL_RED;
+        else if (nrComponents == 3)
+            format = GL_RGB;
+        else if (nrComponents == 4)
+            format = GL_RGBA;
+        else {
+             std::cout << "Texture format not supported for path: " << path << std::endl;
+             stbi_image_free(data);
+             return 0; // 返回0表示加载失败
+        }
+
+        glBindTexture(GL_TEXTURE_2D, textureID);
+        glTexImage2D(GL_TEXTURE_2D, 0, format, width, height, 0, format, GL_UNSIGNED_BYTE, data);
+        glGenerateMipmap(GL_TEXTURE_2D);
+
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+        stbi_image_free(data);
+         std::cout << "Texture loaded successfully: " << path << std::endl;
+    }
+    else
+    {
+        std::cout << "Texture failed to load at path: " << path << std::endl;
+        stbi_image_free(data); // 即使 data 是 nullptr，调用也是安全的
+         return 0; // 返回 0 表示加载失败
+    }
+
+    return textureID;
+}
+
+
+// 渲染屏幕四边形函数 (保持不变)
+void renderQuad()
+{
+    if (quadVAO == 0)
+    {
+        float quadVertices[] = {
+            // positions        // texture Coords
+            -1.0f,  1.0f, 0.0f, 0.0f, 1.0f,
+            -1.0f, -1.0f, 0.0f, 0.0f, 0.0f,
+             1.0f,  1.0f, 0.0f, 1.0f, 1.0f,
+             1.0f, -1.0f, 0.0f, 1.0f, 0.0f,
+        };
+        glGenVertexArrays(1, &quadVAO);
+        glGenBuffers(1, &quadVBO);
+        glBindVertexArray(quadVAO);
+        glBindBuffer(GL_ARRAY_BUFFER, quadVBO);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(quadVertices), &quadVertices, GL_STATIC_DRAW);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0);
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
+    }
+    glBindVertexArray(quadVAO);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glBindVertexArray(0);
 }
